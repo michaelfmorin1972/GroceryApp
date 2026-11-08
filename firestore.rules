@@ -1,0 +1,46 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function isMember(hid) {
+      return signedIn() && request.auth.uid in get(/databases/$(database)/documents/households/$(hid)).data.members;
+    }
+
+    // Invite codes: anyone signed in can look up a code (but not list them all).
+    match /invites/{code} {
+      allow get: if signedIn();
+      allow create: if signedIn()
+        && request.auth.uid in getAfter(/databases/$(database)/documents/households/$(request.resource.data.householdId)).data.members;
+    }
+
+    match /households/{hid} {
+      allow read: if signedIn() && request.auth.uid in resource.data.members;
+      allow create: if signedIn() && request.resource.data.members == [request.auth.uid];
+      // Members can edit; a non-member can only add themselves (after looking up an invite code).
+      allow update: if signedIn() && (
+        request.auth.uid in resource.data.members
+        || (
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members'])
+          && request.resource.data.members.toSet() == resource.data.members.toSet().union([request.auth.uid].toSet())
+        )
+      );
+
+      // v1 single-list data (read once during migration).
+      match /items/{itemId} {
+        allow read, write: if isMember(hid);
+      }
+      match /known/{key} {
+        allow read, write: if isMember(hid);
+      }
+
+      // Multiple lists (groceries, hardware, clothing, …) and everything inside them.
+      match /lists/{listId} {
+        allow read, write: if isMember(hid);
+        match /{sub=**} {
+          allow read, write: if isMember(hid);
+        }
+      }
+    }
+  }
+}
